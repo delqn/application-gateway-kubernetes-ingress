@@ -14,10 +14,12 @@ import (
 
 	n "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2018-12-01/network"
 	"github.com/golang/glog"
+	"k8s.io/api/extensions/v1beta1"
 
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/appgw"
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/environment"
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/events"
+	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/k8scontext"
 )
 
 // Process is the callback function that will be executed for every event
@@ -114,5 +116,42 @@ func (c AppGwIngressController) Process(event events.Event) error {
 	glog.V(3).Info("cache: Updated with latest applied config.")
 	c.updateCache(&appGw)
 
+	// update ingresses with appgw gateway ip address
+	c.updateIngressStatus(generatedAppGw, cbCtx, event)
+
 	return nil
+}
+
+func (c AppGwIngressController) updateIngressStatus(appGw *n.ApplicationGateway, cbCtx *appgw.ConfigBuilderContext, event events.Event) {
+	addList := cbCtx.IngressList
+	removeList := make([]*v1beta1.Ingress, 0)
+	if ingress, ok := event.Value.(*v1beta1.Ingress); ok && event.Type == events.Update && !k8scontext.IsIngressApplicationGateway(ingress) {
+		removeList = append(removeList, ingress)
+	}
+
+	c.k8sContext.SetIngressStatuses(addList, removeList, c.getIPAddress(appGw, cbCtx))
+}
+
+func (c AppGwIngressController) getIPAddress(appGw *n.ApplicationGateway, cbCtx *appgw.ConfigBuilderContext) string {
+	ctx := context.Background()
+	for _, frontendIPConfiguration := range *appGw.FrontendIPConfigurations {
+		if cbCtx.EnvVariables.UsePrivateIP == "true" && frontendIPConfiguration.PrivateIPAddress != nil {
+			return *frontendIPConfiguration.PrivateIPAddress
+		} else if cbCtx.EnvVariables.UsePrivateIP != "true" && frontendIPConfiguration.PublicIPAddress != nil {
+			// parse publicIp resourceId
+			subscriptionID := GetSubscriptionIDFromResourceID(*frontendIPConfiguration.PublicIPAddress.ID)
+			resourceGroup := GetResourceGroupFromResourceID(*frontendIPConfiguration.PublicIPAddress.ID)
+			resourceName := GetResourceNameFromResourceID(*frontendIPConfiguration.PublicIPAddress.ID)
+
+			// initialize public ip client using auth used with appgw client
+			publicIPClient := n.NewPublicIPAddressesClient(subscriptionID)
+			publicIPClient.Authorizer = c.appGwClient.Authorizer
+
+			// get public ip
+			publicIPAddress, _ := publicIPClient.Get(ctx, resourceGroup, resourceName, "")
+			return *publicIPAddress.IPAddress
+		}
+	}
+
+	return ""
 }
