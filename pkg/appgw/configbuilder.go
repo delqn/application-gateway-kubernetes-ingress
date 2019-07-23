@@ -205,7 +205,9 @@ func generateIstioDestinationID(virtualService *v1alpha3.VirtualService, destina
 }
 
 func generateListenerID(rule *v1beta1.IngressRule,
-	protocol n.ApplicationGatewayProtocol, overridePort *int32) listenerIdentifier {
+	protocol n.ApplicationGatewayProtocol,
+	overridePort *int32,
+	usePrivateIP bool) listenerIdentifier {
 	frontendPort := int32(80)
 	if protocol == n.HTTPS {
 		frontendPort = int32(443)
@@ -216,6 +218,7 @@ func generateListenerID(rule *v1beta1.IngressRule,
 	listenerID := listenerIdentifier{
 		FrontendPort: frontendPort,
 		HostName:     rule.Host,
+		UsePrivateIP: usePrivateIP,
 	}
 	return listenerID
 }
